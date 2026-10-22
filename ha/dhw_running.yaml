@@ -1,0 +1,43 @@
+# "Domestic hot water is being produced" indicator. Part of viessmann-optolink-ha, GPL-3.0-or-later.
+# Put under `template:` / `sensor:` in configuration.yaml (or a package). Entity names assume
+# the poll list's node_id "chaudiere" (MQTT discovery -> sensor.chaudiere_*).
+#
+# Logic: burner stage 1 is ON and (the DHW charge pump 0x6513 reads 1, or the tank is more than
+# 1 degC below the DHW setpoint 0x6300). Space heating alone never drives the charge pump.
+# delay_off avoids flapping between two polls.
+template:
+  - binary_sensor:
+      - name: "Production d'eau chaude en cours"
+        unique_id: dhw_producing
+        device_class: running
+        icon: mdi:water-boiler
+        delay_off: "00:01:00"
+        state: >
+          {% set ecs = states('sensor.chaudiere_warmwassertemperatur') | float(none) %}
+          {% set cons = states('number.chaudiere_ecs_consigne') | float(none) %}
+          {{ is_state('binary_sensor.chaudiere_zustand_1_stufe', 'on')
+             and (is_state('sensor.chaudiere_speicherladepumpe', '1')
+                  or (ecs is not none and cons is not none and ecs < cons - 1)) }}
+        attributes:
+          # Empty when it cannot be computed (tank already at setpoint, no measurable rise,
+          # more than 3 h away, or not charging).
+          fin_estimee: >
+            {% if is_state('binary_sensor.production_d_eau_chaude_en_cours', 'on') %}
+              {% set ecs = states('sensor.chaudiere_warmwassertemperatur') | float(none) %}
+              {% set cons = states('number.chaudiere_ecs_consigne') | float(none) %}
+              {% set v = states('sensor.chaudiere_ecs_vitesse_variation_ballon') | float(0) %}
+              {% if ecs is not none and cons is not none and v > 0.02 and cons > ecs %}
+                {% set m = (cons - ecs) / v %}
+                {% if m <= 180 %}{{ (now() + timedelta(minutes=m)).strftime('%H:%M') }}{% endif %}
+              {% endif %}
+            {% endif %}
+
+# Tank temperature rise rate (degC/min) from the DHW temperature (0x0804).
+# From the UI instead: Settings > Devices & services > Helpers > Derivative.
+sensor:
+  - platform: derivative
+    name: "ECS vitesse variation ballon"
+    source: sensor.chaudiere_warmwassertemperatur
+    unit_time: min
+    time_window: "00:10:00"
+    round: 2

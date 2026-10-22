@@ -1,0 +1,17 @@
+# Oil consumption ESTIMATE from burner running hours. Part of viessmann-optolink-ha, GPL-3.0-or-later.
+# Datapoint 0x7574 ("fuel consumption") always reads 0 without a physical flow meter
+# (vcontrold issue 131), so estimate: running hours x nominal burner flow.
+# Replace 2.0 with YOUR burner's flow in kg/h (nameplate). Heating oil density ~0.84 kg/L.
+# It is an estimate (about +/- 15 %): re-calibrate against tank deliveries.
+template:
+  - sensor:
+      - name: "Consommation fioul estimée (kg)"
+        unique_id: fuel_estimated_kg
+        unit_of_measurement: kg
+        state_class: total_increasing
+        state: "{{ (states('sensor.chaudiere_betriebsstunden') | float(0) * 2.0) | round(1) }}"
+      - name: "Consommation fioul estimée (litres)"
+        unique_id: fuel_estimated_litres
+        unit_of_measurement: L
+        state_class: total_increasing
+        state: "{{ (states('sensor.chaudiere_betriebsstunden') | float(0) * 2.0 / 0.84) | round(1) }}"

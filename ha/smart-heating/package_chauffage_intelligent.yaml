@@ -1,0 +1,507 @@
+# Smart heating package / Chauffage intelligent — viessmann-optolink-ha (GPL-3.0-or-later)
+#
+# Adapted from a production setup running on a Vitorondens 222-F; generalised (generic helper
+# names, example calendars). TEST WITH THE AUTOMATIONS DISABLED FIRST and watch the logbook.
+#
+# Enable packages in configuration.yaml:
+#   homeassistant:
+#     packages: !include_dir_named packages
+# then drop this file in packages/. Requires the poll list of this repo (node_id "chaudiere"):
+#   number.chaudiere_temp_confort / temp_reduite (0x2306 / 0x2307), number.chaudiere_ecs_consigne (0x6300),
+#   sensor.chaudiere_temperature_ambiante (0x0896), sensor.chaudiere_aussentemperatur (0x0800),
+#   sensor.chaudiere_warmwassertemperatur (0x0804), sensor.chaudiere_betriebsstunden (0x08A7)
+# and ha/dhw_running.yaml (binary_sensor.production_d_eau_chaude_en_cours).
+#
+# IMPORTANT: the Vitotronic accepts whole degrees only for the room setpoints, so targets are
+# rounded UP to the next degree before being written (19.5 -> 20).
+#
+# Replace the calendar.vacances_* entities by your own calendars (one per person, e.g. a Google or
+# local calendar where an all-day event means "away"). "Everybody away" = all calendars on, or the
+# `zone.home` person counter is 0.
+
+# ---------------------------------------------------------------- helpers
+input_boolean:
+  chauffage_intelligent_actif:
+    name: "Chauffage intelligent actif"
+    icon: mdi:brain
+  chauffage_derogation_active:
+    name: "Dérogation en cours"
+    icon: mdi:hand-back-right
+  chauffage_pre_chauffe_en_cours:
+    name: "Pré-chauffe en cours"
+    icon: mdi:timer-sand
+  ecs_planning_actif:
+    name: "Planning eau chaude actif"
+  ecs_marche_forcee:
+    name: "Eau chaude : marche forcée"
+
+input_select:
+  ecs_mode:
+    name: "Eau chaude : mode"
+    options: ["Actif", "Coupé"]
+    initial: "Actif"
+
+input_number:
+  chauffage_cible_confort:
+    name: "Cible Confort"
+    min: 10
+    max: 25
+    step: 0.5
+    unit_of_measurement: "°C"
+    initial: 20
+  chauffage_cible_reduite:
+    name: "Cible Réduit"
+    min: 10
+    max: 25
+    step: 0.5
+    unit_of_measurement: "°C"
+    initial: 17
+  chauffage_consigne_du_moment:
+    name: "Consigne du moment"
+    min: 10
+    max: 25
+    step: 0.5
+    unit_of_measurement: "°C"
+    mode: box
+  vitesse_de_chauffe_de_la_maison:
+    name: "Vitesse de chauffe de la maison (apprise)"
+    min: 0.05
+    max: 5
+    step: 0.01
+    unit_of_measurement: "°C/h"
+    initial: 0.5
+  pre_chauffe_avance_maximum:
+    name: "Pré-chauffe : avance maximum"
+    min: 1
+    max: 10
+    step: 0.5
+    unit_of_measurement: h
+    initial: 5
+  ecs_temperature_active:
+    name: "Eau chaude : température voulue"
+    min: 40
+    max: 60
+    step: 1
+    unit_of_measurement: "°C"
+    initial: 55
+  ecs_seuil_relance:
+    name: "Eau chaude : seuil de relance (ballon coupé)"
+    min: 20
+    max: 50
+    step: 1
+    unit_of_measurement: "°C"
+    initial: 38
+  ecs_volume_ballon:
+    name: "Volume du ballon"
+    min: 50
+    max: 500
+    step: 10
+    unit_of_measurement: L
+    initial: 130
+  ecs_pertes_ballon:
+    name: "Pertes du ballon (°C/h à 32 °C au-dessus de l'ambiance)"
+    min: 0
+    max: 3
+    step: 0.05
+    unit_of_measurement: "°C/h"
+    initial: 0.4
+  ecs_temperature_ballon_a_minuit:
+    name: "Température du ballon à minuit"
+    min: 0
+    max: 100
+    step: 0.1
+    unit_of_measurement: "°C"
+  ecs_temperature_au_robinet:
+    name: "Température d'usage au robinet"
+    min: 30
+    max: 50
+    step: 1
+    unit_of_measurement: "°C"
+    initial: 40
+  ecs_temperature_eau_froide:
+    name: "Température de l'eau froide"
+    min: 5
+    max: 25
+    step: 1
+    unit_of_measurement: "°C"
+    initial: 13
+
+# Weekly planning: ON = Comfort, OFF = Reduced. Edit it in the UI (Settings > Helpers) or with a
+# schedule card. Several slots per day are allowed.
+schedule:
+  chauffage_confort:
+    name: "Chauffage — plages Confort"
+    monday: &semaine
+      - from: "06:00:00"
+        to: "08:30:00"
+      - from: "17:00:00"
+        to: "22:00:00"
+    tuesday: *semaine
+    wednesday:
+      - from: "06:00:00"
+        to: "22:00:00"
+    thursday: *semaine
+    friday: *semaine
+    saturday:
+      - from: "07:30:00"
+        to: "23:00:00"
+    sunday:
+      - from: "07:30:00"
+        to: "22:00:00"
+
+# ---------------------------------------------------------------- template sensors
+template:
+  - sensor:
+      # How long before the next Comfort slot the pre-heating must start, in minutes:
+      # (target - room temperature) / learned heating speed. Capped by "avance maximum".
+      - name: "Chauffage avance pré-chauffe"
+        unique_id: chauffage_avance_pre_chauffe
+        unit_of_measurement: min
+        state: >
+          {% set c = states('input_number.chauffage_cible_confort') | float(20) %}
+          {% set t = states('sensor.chaudiere_temperature_ambiante') | float(c) %}
+          {% set v = states('input_number.vitesse_de_chauffe_de_la_maison') | float(0.5) %}
+          {% set mx = states('input_number.pre_chauffe_avance_maximum') | float(5) * 60 %}
+          {{ ([[(c - t) / v * 60, 0] | max, mx] | min) | round(0) }}
+      - name: "Chauffage prochaine plage Confort"
+        unique_id: chauffage_prochaine_plage_confort
+        device_class: timestamp
+        state: "{{ state_attr('schedule.chauffage_confort', 'next_event') }}"
+      # Hot water tank balance (°C/h): +rise while charging, minus standing losses.
+      # Near 0 = stable, negative = the tank is cooling (losses or draw-off).
+      - name: "Eau chaude : bilan ballon"
+        unique_id: ecs_bilan_ballon
+        unit_of_measurement: "°C/h"
+        state_class: measurement
+        availability: "{{ states('sensor.chaudiere_warmwassertemperatur') | is_number }}"
+        state: >
+          {% set rec = is_state('binary_sensor.production_d_eau_chaude_en_cours', 'on') %}
+          {% set montee = ([states('sensor.chaudiere_ecs_vitesse_variation_ballon') | float(0) * 60, 0] | max) if rec else 0 %}
+          {% set t = states('sensor.chaudiere_warmwassertemperatur') | float(50) %}
+          {% set k = states('input_number.ecs_pertes_ballon') | float(0.4) / 32 %}
+          {{ (montee - k * ([t - 18, 0] | max)) | round(3) }}
+      # Estimated hot water drawn today (litres), from the tank temperature drop since midnight.
+      # Needs a daily utility_meter on the tank balance if you want the exact version; this
+      # simplified form uses the temperature drop only.
+      - name: "Eau chaude tirée estimée"
+        unique_id: ecs_tiree_estimee
+        unit_of_measurement: L
+        state: >
+          {% set v = states('input_number.ecs_volume_ballon') | float(130) %}
+          {% set chute = states('input_number.ecs_temperature_ballon_a_minuit') | float(0) - states('sensor.chaudiere_warmwassertemperatur') | float(0) %}
+          {% set ecart = states('input_number.ecs_temperature_au_robinet') | float(40) - states('input_number.ecs_temperature_eau_froide') | float(13) %}
+          {{ ([v * chute / ecart, 0] | max) | round(0) if ecart > 5 else 0 }}
+
+# Consumption per period (resets automatically). Source: sensor.consommation_fioul_estimee_litres
+# created by ha/fuel_estimate.yaml (burner hours x nominal flow).
+utility_meter:
+  fioul_aujourd_hui:
+    source: sensor.consommation_fioul_estimee_litres
+    cycle: daily
+  fioul_hebdomadaire:
+    source: sensor.consommation_fioul_estimee_litres
+    cycle: weekly
+  fioul_mensuel:
+    source: sensor.consommation_fioul_estimee_litres
+    cycle: monthly
+  fioul_annuel:
+    source: sensor.consommation_fioul_estimee_litres
+    cycle: yearly
+
+# ---------------------------------------------------------------- automations
+automation:
+  - id: chauffage_intelligent_planning
+    alias: "Chauffage intelligent - planning"
+    description: >
+      Writes the room setpoints (normal + reduced) of the boiler from the HA planning, presence,
+      holiday calendars, pre-heating and manual override. The boiler follows the setpoint of its
+      own time phase, so BOTH setpoints are written with the same effective target.
+    mode: queued
+    max: 5
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: schedule.chauffage_confort
+      - trigger: state
+        entity_id: zone.home
+      - trigger: state
+        entity_id:
+          - input_number.chauffage_cible_confort
+          - input_number.chauffage_cible_reduite
+          - input_boolean.chauffage_intelligent_actif
+          - input_boolean.chauffage_derogation_active
+          - calendar.vacances_occupant_1
+          - calendar.vacances_occupant_2
+      - trigger: time_pattern
+        minutes: "/10"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.chauffage_intelligent_actif
+        state: "on"
+    actions:
+      - variables:
+          confort_now: "{{ is_state('schedule.chauffage_confort', 'on') }}"
+          cible_confort: "{{ states('input_number.chauffage_cible_confort') | float(20) }}"
+          cible_reduite: "{{ states('input_number.chauffage_cible_reduite') | float(17) }}"
+          temp_actu: "{{ states('sensor.chaudiere_temperature_ambiante') | float(20) }}"
+          avance_s: "{{ states('sensor.chauffage_avance_pre_chauffe') | float(0) * 60 }}"
+          avance_max_s: "{{ states('input_number.pre_chauffe_avance_maximum') | float(5) * 3600 }}"
+          next_conf: "{{ as_timestamp(states('sensor.chauffage_prochaine_plage_confort'), none) }}"
+          # Everybody away: all holiday calendars are on, or nobody is home.
+          absents: >
+            {% set cals = ['calendar.vacances_occupant_1', 'calendar.vacances_occupant_2'] %}
+            {{ (cals | map('states') | select('eq', 'on') | list | count == cals | count)
+               or states('zone.home') | int(0) == 0 }}
+      - variables:
+          dt: "{{ (next_conf - as_timestamp(now())) if next_conf is not none else 999999 }}"
+          en_prechauffe: "{{ is_state('input_boolean.chauffage_pre_chauffe_en_cours', 'on') }}"
+      - variables:
+          # Pre-heat latch: starts when the gap is > 0.2 degC inside the lead window, then stays
+          # on until the Comfort slot (no flip-flop when the room crosses the target).
+          preheat: >
+            {{ (not confort_now) and next_conf is not none and dt > 0
+               and ((cible_confort - temp_actu > 0.2 and dt <= avance_s)
+                    or (en_prechauffe and dt <= avance_max_s)) }}
+      - variables:
+          chauffe: "{{ (not absents) and (confort_now or preheat) }}"
+          derog: >
+            {{ is_state('input_boolean.chauffage_derogation_active', 'on') and not absents
+               and states('input_number.chauffage_consigne_du_moment') | is_number }}
+      - variables:
+          cible_planning: "{{ cible_confort if chauffe else cible_reduite }}"
+          cible: >
+            {% set v = states('input_number.chauffage_consigne_du_moment') | float(0) %}
+            {% if derog %}{{ ([v, cible_confort] | max) if preheat else v }}{% else %}{{ cible_planning }}{% endif %}
+      - variables:
+          consigne: "{{ (cible | float) | round(0, 'ceil') | int }}"
+      # Show the effective target in the "consigne du moment" widget (outside overrides).
+      - if:
+          - condition: state
+            entity_id: input_boolean.chauffage_derogation_active
+            state: "off"
+          - condition: template
+            value_template: >
+              {{ states('input_number.chauffage_consigne_du_moment') | float(-999)
+                 != ((cible | float * 2) | round(0) / 2) }}
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.chauffage_consigne_du_moment
+            data:
+              value: "{{ (cible | float * 2) | round(0) / 2 }}"
+      - choose:
+          - conditions: "{{ preheat and not en_prechauffe }}"
+            sequence:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.chauffage_pre_chauffe_en_cours
+          - conditions: "{{ (not preheat) and en_prechauffe }}"
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.chauffage_pre_chauffe_en_cours
+      # Write the boiler (only when the value differs: the Optolink is a slow link).
+      - if:
+          - condition: template
+            value_template: "{{ states('number.chaudiere_temp_confort') | float(-999) != consigne | float }}"
+        then:
+          - action: number.set_value
+            target:
+              entity_id: number.chaudiere_temp_confort
+            data:
+              value: "{{ consigne }}"
+      - if:
+          - condition: template
+            value_template: "{{ states('number.chaudiere_temp_reduite') | float(-999) != consigne | float }}"
+        then:
+          - action: number.set_value
+            target:
+              entity_id: number.chaudiere_temp_reduite
+            data:
+              value: "{{ consigne }}"
+
+  - id: chauffage_derogation
+    alias: "Chauffage intelligent - dérogation"
+    description: >
+      A manual change of "consigne du moment" (widget, app, UI or API — not done by an automation)
+      raises the override flag. It ends at the next Comfort/Reduced slot change or when you switch
+      the flag off. Ignored while everybody is away.
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: input_number.chauffage_consigne_du_moment
+        not_from: ["unavailable", "unknown"]
+        not_to: ["unavailable", "unknown"]
+        id: manuel
+      - trigger: state
+        entity_id: schedule.chauffage_confort
+        id: creneau
+    actions:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: manuel
+              - condition: template
+                value_template: >
+                  {{ trigger.from_state is not none and trigger.to_state.context.parent_id is none
+                     and trigger.from_state.state != trigger.to_state.state }}
+            sequence:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.chauffage_derogation_active
+          - conditions:
+              - condition: trigger
+                id: creneau
+              - condition: state
+                entity_id: input_boolean.chauffage_derogation_active
+                state: "on"
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.chauffage_derogation_active
+
+  - id: chauffage_mesure_vitesse
+    alias: "Chauffage - mesure vitesse de chauffe"
+    description: >
+      At each setpoint rise of at least 0.5 degC, measures how fast the room warms up until the
+      target is reached (6 h max) and updates the learned speed (exponential average 70/30).
+      Drives nothing.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: number.chaudiere_temp_confort
+        not_from: ["unavailable", "unknown"]
+        not_to: ["unavailable", "unknown"]
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.to_state.state | float(0) >= trigger.from_state.state | float(0) + 0.5 }}"
+      - condition: numeric_state
+        entity_id: sensor.chaudiere_temperature_ambiante
+        above: 5
+    actions:
+      - variables:
+          t0: "{{ states('sensor.chaudiere_temperature_ambiante') | float(0) }}"
+          ts0: "{{ as_timestamp(now()) }}"
+      - wait_for_trigger:
+          - trigger: numeric_state
+            entity_id: sensor.chaudiere_temperature_ambiante
+            above: number.chaudiere_temp_confort
+            value_template: "{{ state.state | float(0) + 0.2 }}"
+          - trigger: state
+            entity_id: number.chaudiere_temp_confort
+        timeout:
+          hours: 6
+        continue_on_timeout: true
+      - variables:
+          t1: "{{ states('sensor.chaudiere_temperature_ambiante') | float(0) }}"
+          duree_h: "{{ (as_timestamp(now()) - ts0) / 3600 }}"
+      - variables:
+          montee: "{{ t1 - t0 }}"
+      # Ignore short or tiny measurements (noise, interrupted rise).
+      - condition: template
+        value_template: "{{ duree_h >= 0.5 and montee >= 0.3 }}"
+      - variables:
+          mesure: "{{ (montee / duree_h) | round(2) }}"
+          ancienne: "{{ states('input_number.vitesse_de_chauffe_de_la_maison') | float(0) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.vitesse_de_chauffe_de_la_maison
+        data:
+          value: >
+            {{ ([[ (0.7 * ancienne + 0.3 * mesure) if ancienne > 0 else mesure, 0.05 ] | max, 5] | min) | round(2) }}
+      - action: logbook.log
+        data:
+          name: Vitesse de chauffe
+          message: "Mesure {{ t0 }} → {{ t1 }} °C en {{ (duree_h * 60) | round(0) | int }} min = {{ mesure }} °C/h"
+
+  - id: ecs_planning
+    alias: "ECS - planning eau chaude"
+    description: >
+      Hot water setpoint (0x6300): the chosen temperature when active, forced, or planning off;
+      otherwise 10 degC (tank kept off; the boiler never goes below its frost protection).
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id:
+          - input_select.ecs_mode
+          - input_boolean.ecs_planning_actif
+          - input_number.ecs_temperature_active
+          - input_boolean.ecs_marche_forcee
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: "/30"
+    actions:
+      - action: number.set_value
+        target:
+          entity_id: number.chaudiere_ecs_consigne
+        data:
+          value: >
+            {{ (states('input_number.ecs_temperature_active') | float(55)) | round(0) | int
+               if (is_state('input_boolean.ecs_planning_actif', 'off')
+                   or is_state('input_select.ecs_mode', 'Actif')
+                   or is_state('input_boolean.ecs_marche_forcee', 'on')) else 10 }}
+
+  - id: ecs_relance_auto
+    alias: "ECS - relance auto (gros puisage)"
+    description: Restarts hot water production when the tank drops fast or under the threshold while it is planned OFF.
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.chaudiere_warmwassertemperatur
+        below: input_number.ecs_seuil_relance
+        for:
+          minutes: 2
+      - trigger: numeric_state
+        entity_id: sensor.chaudiere_ecs_vitesse_variation_ballon
+        below: -0.2
+    conditions:
+      - condition: state
+        entity_id: input_boolean.ecs_planning_actif
+        state: "on"
+      - condition: state
+        entity_id: input_select.ecs_mode
+        state: "Coupé"
+      - condition: state
+        entity_id: input_boolean.ecs_marche_forcee
+        state: "off"
+    actions:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.ecs_marche_forcee
+
+  - id: ecs_memoriser_minuit
+    alias: "Eau chaude - mémoriser la température du ballon à minuit"
+    mode: single
+    triggers:
+      - trigger: time
+        at: "00:00:00"
+    conditions:
+      - condition: numeric_state
+        entity_id: sensor.chaudiere_warmwassertemperatur
+        above: 0
+    actions:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.ecs_temperature_ballon_a_minuit
+        data:
+          value: "{{ states('sensor.chaudiere_warmwassertemperatur') | float }}"
+
+  - id: ecs_fin_marche_forcee
+    alias: "ECS - fin de marche forcée"
+    description: Ends the forced run once the tank is back above the relaunch threshold + 10 degC.
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.chaudiere_warmwassertemperatur
+        above: input_number.ecs_seuil_relance
+        value_template: "{{ state.state | float(0) - 10 }}"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.ecs_marche_forcee
+        state: "on"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.ecs_marche_forcee

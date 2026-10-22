@@ -1,0 +1,52 @@
+# Example dashboard view (sections). Part of viessmann-optolink-ha, GPL-3.0-or-later.
+# Paste into the raw configuration editor of a dashboard.
+title: Boiler
+views:
+  - title: Boiler
+    type: sections
+    sections:
+      - type: grid
+        cards:
+          # Banner shown only while hot water is being produced.
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.production_d_eau_chaude_en_cours
+                state: "on"
+            card:
+              type: markdown
+              content: >
+                ### 💧 Hot water being produced, heating paused
+                {% set f = state_attr('binary_sensor.production_d_eau_chaude_en_cours', 'fin_estimee') %}
+                {% if f not in [none, '', 'unknown'] %} · ends around {{ f }}{% endif %}
+          - type: heading
+            heading: Boiler
+            icon: mdi:fire
+          - type: tile
+            entity: binary_sensor.chaudiere_zustand_1_stufe
+            name: Burner
+          - type: tile
+            entity: sensor.chaudiere_kesseltemperatur
+            name: Boiler water
+          - type: tile
+            entity: sensor.chaudiere_warmwassertemperatur
+            name: Hot water tank
+          - type: tile
+            entity: sensor.chaudiere_aussentemperatur
+            name: Outside
+          - type: tile
+            entity: select.chaudiere_betriebsart_mode
+            name: Mode
+          - type: tile
+            entity: number.chaudiere_ecs_consigne
+            name: Hot water setpoint
+          - type: thermostat
+            entity: climate.chaudiere_vitorondens_thermostat_confort
+          - type: thermostat
+            entity: climate.chaudiere_vitorondens_thermostat_reduite
+          - type: history-graph
+            hours_to_show: 24
+            entities:
+              - entity: sensor.chaudiere_warmwassertemperatur
+              - entity: sensor.chaudiere_kesseltemperatur
+              - entity: binary_sensor.production_d_eau_chaude_en_cours
