@@ -6,6 +6,9 @@ Ce guide décrit un **chauffage intelligent** construit sur ce kit : Home Assist
 
 > Les YAML viennent d'une installation réelle (Vitorondens 222-F) et ont été généralisés (noms et calendriers d'exemple). **Testez automatisations désactivées**, surveillez le journal, et gardez l'afficheur de la chaudière comme référence.
 
+![Tableau de bord vue d'ensemble avec la prévision de pré-chauffe](images/01-vue-ensemble.png)
+*Vue d'ensemble : la ligne « Pré-chauffe » donne la prévision pour la prochaine plage Confort (cible, degrés à gagner, durée estimée et heure de démarrage).*
+
 ## Ce que ça apporte
 - **Confort** : la maison est à la bonne température *à l'heure voulue* (pré-chauffe), pas 2 h après.
 - **Économies** : consigne réduite quand personne n'est là, coupure en vacances, pas de surchauffe inutile ; fioul visible par jour/semaine/mois/année.
@@ -18,10 +21,19 @@ Un helper `schedule` (`schedule.chauffage_confort`) remplace le programme horair
 
 > ⚠️ La Vitotronic n'accepte que des **degrés entiers** pour ces consignes. La cible exacte (19,5) est arrondie au degré supérieur (20) avant écriture.
 
+![Cartes thermostat Confort et Réduite montrant les consignes envoyées à la chaudière](images/04-thermostats-confort-reduit.png)
+*Les deux thermostats (confort et réduite) affichent les consignes écrites dans la chaudière (ici 16 °C) et la température ambiante actuelle.*
+
+![Grille de planning hebdomadaire Confort/Réduit et réglages du chauffage intelligent dans Home Assistant](images/05-planning-confort-reduit.png)
+*Planning hebdomadaire (orange = Confort, gris = Réduit) et réglages du chauffage intelligent : Confort 20 °C, Réduit 16 °C, vitesse de chauffe apprise, consigne envoyée à la chaudière.*
+
 ### 2. Pré-chauffe anticipée
 La vitesse de chauffe mesurée (°C/h) sert à calculer *combien de temps avant* la plage Confort il faut démarrer : `(cible − ambiante) / vitesse`. Un **verrou** (« pré-chauffe en cours ») évite les basculements quand la température frôle la cible : la pré-chauffe démarre si l'écart dépasse 0,2 °C dans la fenêtre d'avance, puis reste active jusqu'à la plage Confort. Le capteur `sensor.chauffage_avance_pre_chauffe` donne l'avance calculée (plafonnée par « avance maximum »).
 
 La vitesse est **apprise** par l'automatisation « mesure vitesse de chauffe » : à chaque montée de consigne d'au moins 0,5 °C, elle mesure la montée réelle jusqu'à la cible (6 h max) et met à jour la vitesse par moyenne exponentielle 70/30. Au début, la valeur initiale (0,5 °C/h) est approximative : laissez quelques jours tourner.
+
+![Courbes de température sur 24 h (ambiante, extérieure, départ radiateurs, eau chaude, brûleur) et vitesse de chauffe sur 7 jours](images/02-courbes-24h.png)
+*À gauche : courbes 24 h — cycles du brûleur (jaune), eau chaude (cyan) qui monte pendant la charge, départ radiateurs (violet), ambiante (rouge). À droite : vitesse de chauffe instantanée et apprise (°C/h) sur 7 jours.*
 
 ### 3. Maison vide et vacances
 Deux cas coupent le Confort (la cible redevient « Réduit », pré-chauffe comprise) :
@@ -36,8 +48,14 @@ La Vitotronic donne par défaut la **priorité à la production d'eau chaude** (
 
 Autres automatisations eau chaude du package : planning de la consigne ECS (0x6300 = température voulue, ou 10 °C pour couper), **relance automatique** si le ballon chute vite pendant une plage coupée (gros puisage), fin de marche forcée.
 
+![Grille de planning eau chaude avec marche forcée et seuil de relance](images/06-planning-eau-chaude.png)
+*Planning eau chaude (orange = actif, gris = coupé), marche forcée, seuil de relance et température/variation du ballon : la relance automatique redémarre la production après un gros puisage.*
+
 ### 6. Courbe de chauffe laissée à la chaudière
 La pente (0x27D3) et le niveau (0x27D4) de la **courbe de chauffe** restent gérés par la chaudière (régulation en fonction de la température extérieure). Le kit les expose en lecture/écriture pour le réglage fin, mais le chauffage intelligent ne les modifie pas : il agit seulement sur les consignes ambiantes. Règle pratique : si la maison est trop froide *par grand froid* alors qu'elle est bonne par temps doux, augmentez la pente ; si elle est trop chaude/froide partout, changez le niveau.
+
+![Carte de réglages avec pente et niveau de la courbe de chauffe](images/03-reglages-chaudiere.png)
+*Pente (1,4) et niveau (1) de la courbe de chauffe tels qu'exposés par le kit ; le chauffage intelligent ne les modifie jamais.*
 
 ### 7. Consommation de fioul et compteurs par période
 Le compteur de fioul de la chaudière (0x7574) reste à 0 sans débitmètre. Le kit l'**estime** : heures de brûleur (0x08A7) × débit nominal du brûleur (plaque signalétique, en kg/h) ÷ densité (0,84 kg/L), voir [`ha/fuel_estimate.yaml`](../ha/fuel_estimate.yaml). Le package ajoute des compteurs jour / semaine / mois / année (`utility_meter`). Recalez l'estimation avec vos livraisons réelles (± 15 % typique).

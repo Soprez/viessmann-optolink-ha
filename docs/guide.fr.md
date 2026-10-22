@@ -57,6 +57,15 @@ WantedBy=multi-user.target
 3. Thermostats facultatifs : `MQTT_PASSWORD=… python3 ha/publish_climate.py` (publie deux configs climate retenues).
 4. Ajoutez les éléments de [`ha/`](../ha) : `dhw_running.yaml` (indicateur eau chaude), `fuel_estimate.yaml`, et la vue d'exemple `lovelace-example.yaml`.
 
+![Carte de réglages Home Assistant : mode de fonctionnement de la chaudière, consigne eau chaude, pente et niveau de la courbe de chauffe](images/03-reglages-chaudiere.png)
+*Une carte de réglages pour les données modifiables : mode (0x2323), consigne eau chaude (0x6300), pente (0x27D3) et niveau (0x27D4) de la courbe de chauffe. Écriture : voir la section sécurité ci-dessous.*
+
+![Page appareil MQTT dans Home Assistant : capteurs découverts depuis la poll list (températures, heures et démarrages du brûleur, modulation, départs)](images/08-entites-mqtt-capteurs.png)
+*Capteurs découverts automatiquement : températures des fumées, extérieure, chaudière et eau chaude, heures du brûleur (0x08A7), démarrages (0x088A), modulation (0xA38F), départ réel/cible.*
+
+![Page appareil MQTT dans Home Assistant : contrôles découverts depuis la poll list (mode, consigne eau chaude, pente et niveau de la courbe, consignes confort et réduite, deux thermostats)](images/07-entites-mqtt-controles.png)
+*Contrôles découverts automatiquement par MQTT : mode de fonctionnement, consigne eau chaude (0x6300), pente et niveau de la courbe de chauffe (0x27D3/0x27D4), consignes confort/réduite (0x2306/0x2307) et les deux thermostats. (Le mode indique « eau chaude seule » car le chauffage était en pause par le chauffage intelligent.)*
+
 ## 8. Sécurité — à lire avant toute écriture
 - **Commencez en lecture seule.** Lire est sans risque ; écrire modifie la régulation d'un chauffage.
 - Mode (0x2323) : seulement **1** (eau chaude seule) et **2** (chauffage + eau chaude). **Jamais 3** (coupe tout).

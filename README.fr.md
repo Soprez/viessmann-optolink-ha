@@ -6,6 +6,9 @@
 
 > Ce n'est **pas un fork** et il ne contient aucun code d'optolink-splitter : c'est une poll list prête à l'emploi, un tableau des adresses validées / invalides, des YAML Home Assistant et des guides pas à pas.
 
+![Tableau de bord Home Assistant : état du brûleur, température ambiante, consigne, mode, prévision de pré-chauffe et niveau de la cuve de fioul](docs/images/01-vue-ensemble.png)
+*Le tableau de bord « vue d'ensemble » de la chaudière construit avec ce kit : brûleur, température ambiante, consigne du moment, mode du planning, prévision de pré-chauffe et niveau de fioul estimé. (Le chauffage est en pause ici car la maison est assez chaude.)*
+
 ## ☕ Soutenir le projet
 
 Ce kit est gratuit. S'il vous a fait gagner du temps, un café fait très plaisir : **[buymeacoffee.com/soprez](https://buymeacoffee.com/soprez)**.

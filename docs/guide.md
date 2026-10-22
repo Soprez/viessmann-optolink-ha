@@ -57,6 +57,15 @@ WantedBy=multi-user.target
 3. Optional thermostats: `MQTT_PASSWORD=… python3 ha/publish_climate.py` (publishes two retained climate discovery configs).
 4. Add the helpers/templates from [`ha/`](../ha): `dhw_running.yaml` (hot-water indicator), `fuel_estimate.yaml`, and the example view `lovelace-example.yaml`.
 
+![Home Assistant settings card: boiler operating mode, hot-water setpoint, heating curve slope and level](images/03-reglages-chaudiere.png)
+*A settings card for the writable datapoints: mode (0x2323), hot-water setpoint (0x6300), heating-curve slope (0x27D3) and level (0x27D4). Write access: see the safety section below.*
+
+![MQTT device page in Home Assistant: sensors discovered from the poll list (temperatures, burner hours, burner starts, burner modulation, flow temperatures)](images/08-entites-mqtt-capteurs.png)
+*Sensors discovered automatically: flue gas, outside, boiler and hot-water temperatures, burner hours (0x08A7), burner starts (0x088A), modulation (0xA38F), flow actual/target.*
+
+![MQTT device page in Home Assistant: controls discovered from the poll list (mode, hot-water setpoint, heating curve slope and level, comfort and reduced setpoints, two thermostats)](images/07-entites-mqtt-controles.png)
+*Controls discovered automatically over MQTT: operating mode, hot-water setpoint (0x6300), heating-curve slope and level (0x27D3/0x27D4), comfort/reduced setpoints (0x2306/0x2307) and the two thermostats. (The mode reads "hot water only" because heating was paused by the smart-heating logic.)*
+
 ## 8. Safety — read before writing anything
 - **Start read-only.** Reading is harmless; writing changes the regulation of a heating system.
 - Mode (0x2323): only **1** (hot water only) and **2** (heating + hot water). **Never 3** (switches everything off).

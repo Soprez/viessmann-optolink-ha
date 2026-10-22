@@ -6,6 +6,9 @@
 
 > This is **not a fork** and contains none of optolink-splitter's code. It is a ready-to-use poll list, a table of validated / invalid addresses, Home Assistant YAML and step-by-step guides.
 
+![Home Assistant dashboard: burner state, room temperature, setpoint, mode, pre-heating forecast and oil tank level](docs/images/01-vue-ensemble.png)
+*The boiler overview dashboard built with this kit: burner, room temperature, current setpoint, planning mode, pre-heating forecast and estimated oil level. (Heating is paused here because the house is warm enough.)*
+
 ## ☕ Support this project
 
 This kit is free. If it saved you time, a coffee is very welcome: **[buymeacoffee.com/soprez](https://buymeacoffee.com/soprez)**.
